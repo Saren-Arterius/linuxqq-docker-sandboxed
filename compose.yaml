@@ -1,0 +1,118 @@
+# QQ runs in a Docker container with strict limits. QQ is not trusted software.
+# Start the container with this command:
+#   docker compose up -d
+#
+# Put QQ.deb in this directory before you build the image. Download it with this command:
+#   curl -fL "https://dlqq.akkariin.moe/$(curl -s https://cdn-go.cn/qq-web/im.qq.com_new/latest/rainbow/linuxConfig.js | grep -oP '(?<="deb":")[^"]+' | head -1)" -o QQ.deb
+# Run it once for each new version of QQ. The direct Tencent URL gives an HTTP 403 error
+# from this computer. The mirror URL works.
+services:
+  # x-grant prepares the host for the QQ container. It runs one time, before qq starts.
+  # It runs as root. It runs only the command written below. QQ code does not run here.
+  #
+  # 1. It copies the X session cookie to ./share/.xauth. The file belongs to root and group
+  #    render, with mode 640. The QQ container reads it because it has group 989. A program
+  #    that runs only as uid 65534 cannot read it. dnsmasq on this host is one such program.
+  #    It also removes the old si:localuser:nobody grant, if that grant exists.
+  #    Do not use "xhost +si:localuser:nobody". That command gives your desktop to every
+  #    process that runs as uid 65534 on the host.
+  #    Do not use "si:localgroup". The X server reads group membership from the host. It
+  #    cannot see the groups inside a container. This test failed: both connections were
+  #    refused.
+  # 2. It adds an ACL to the X socket, so uid 65534 can connect to it. This permits a
+  #    connection only. The cookie is still necessary.
+  # 3. It gives ./share to uid 65534, so the QQ container can write files there.
+  # 4. It adds the firewall rules for the container. See the networks section at the end of
+  #    this file. Both chains are necessary. A packet for a port on this host goes to the
+  #    INPUT chain. It does not go to the FORWARD chain, so DOCKER-USER cannot see it.
+  #    DOCKER-USER sees packets that pass through this host to another network.
+  #    Each chain gets one rule: send traffic from this subnet to the QQ_JAIL chain. The
+  #    service clears QQ_JAIL and builds it again every time. This is safe because only this
+  #    service writes in QQ_JAIL. It also means a change in the rules below takes effect on
+  #    the next "docker compose up". The service does not add the jump rule again if it is
+  #    already there, so you can run "docker compose up" many times.
+  #    qq starts only if this service exits with 0. The "set -e" command stops the service
+  #    if a rule fails, so the container never starts without its rules.
+  #    The first rule in QQ_JAIL must name the resolver address. An ACCEPT rule for udp port
+  #    53 without a destination permits packets to any address on your LAN. Test that sent
+  #    three datagrams to the LAN router and all three reached the wire.
+  x-grant:
+    image: alpine:3.22                         # Fixed version. The apk command below downloads packages from the network.
+    user: "0"
+    network_mode: host                         # The rules belong to the host, so this service must use the host network namespace.
+    cap_add: [NET_ADMIN]                       # Needed for the iptables commands only. QQ code does not run here.
+    environment: { DISPLAY: ":0" }
+    command: >-
+      sh -c 'set -e; f=$$(ls /xauth/.mutter-Xwaylandauth.* 2>/dev/null | head -1);
+      [ -n "$$f" ] || { echo "no xauth cookie found"; exit 1; };
+      chown 65534:65534 /share; install -o 0 -g 989 -m 640 "$$f" /share/.xauth;
+      apk add --no-cache acl xhost iptables >/dev/null;
+      setfacl -m u:65534:rw /tmp/.X11-unix/X0;
+      XAUTHORITY=$$f xhost -si:localuser:nobody >/dev/null 2>&1 || true;
+      iptables -N QQ_JAIL 2>/dev/null || true; iptables -F QQ_JAIL;
+      iptables -A QQ_JAIL -d 127.0.0.11 -p udp --dport 53 -j ACCEPT;
+      iptables -A QQ_JAIL -d 224.0.0.0/4,127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,169.254.0.0/16 -j REJECT;
+      for c in INPUT DOCKER-USER; do iptables -C $$c -s 172.26.0.0/24 -j QQ_JAIL 2>/dev/null ||
+        iptables -I $$c 1 -s 172.26.0.0/24 -j QQ_JAIL; done;
+      echo "x-grant done"'
+    volumes:
+      - ./share:/share
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /run/user/1000:/xauth:ro
+    restart: "no"
+
+  # The QQ container.
+  qq:
+    build: .
+    depends_on:
+      x-grant:
+        condition: service_completed_successfully
+    user: "65534:65534"                        # nobody. Do not use your own uid.
+    cap_drop: [ALL]                            # The container starts with no Linux capabilities.
+    security_opt: ["no-new-privileges:true"]   # A program cannot gain privileges. Docker also applies its default seccomp profile.
+    read_only: true
+    tmpfs: ["/tmp:mode=1777,size=256m"]        # /tmp is writable, and programs cannot execute files from it.
+    shm_size: 512m                             # Electron shows a blank window without enough shared memory.
+    pids_limit: 512                            # Limit: the container can start 512 processes at most.
+    mem_limit: 2g                              # Limit: the container can use 2 GB of memory at most.
+    group_add: ["989"]                         # The host group render. Gives access to /dev/dri and to ./share/.xauth.
+    devices: ["/dev/dri"]
+    environment:
+      DISPLAY: ":0"
+      XDG_RUNTIME_DIR: /tmp
+      XAUTHORITY: /share/.xauth
+    volumes:
+      - qq-home:/home/qq                       # QQ keeps its login, cache and chat history here. Docker creates the volume with the owner from the image.
+      - ./share:/share                         # You and QQ exchange files here. QQ saves received files here.
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro       # Read-only. The X client library uses this path. The container does not write here.
+    restart: "no"
+    networks: [qq-net]
+
+volumes:
+  qq-home:
+
+networks:
+  # The container gets its own bridge and a fixed subnet. Two bridges cannot send packets
+  # to each other, unless a container connects to both of them.
+  # The firewall rules select this subnet as the source. The subnet is therefore part of the
+  # security. If you change it, delete the old jump rule in both chains. If you do not, the
+  # container has no rules. One command for each chain:
+  #   iptables -D INPUT -s <old-subnet> -j QQ_JAIL
+  # INPUT gives the container access to nothing on this host: no sshd, no syncthing, no
+  # development server, no tailscale address.
+  # DOCKER-USER gives the container access to nothing that passes through this host: no
+  # computers on the LAN, no other Docker subnets.
+  # The REJECT rules cover these destinations: multicast, 127.0.0.0/8, 10.0.0.0/8,
+  # 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 and 169.254.0.0/16. The multicast rule is
+  # insurance. This host does not forward multicast (mc_forwarding = 0), so those packets
+  # already stop here. Do not depend on that setting.
+  # The ACCEPT rule for DNS must name 127.0.0.11, the address in /etc/resolv.conf. Docker
+  # answers DNS inside its own network sandbox, so these chains normally see no DNS packets
+  # at all. The rule keeps DNS working if that changes. An ACCEPT rule for udp port 53
+  # without a destination is not safe: a test put three datagrams on your LAN with it.
+  # The container has no IPv6 address, so it cannot send IPv6 packets. No IPv6 rule is
+  # necessary.
+  qq-net:
+    ipam:
+      config:
+        - subnet: 172.26.0.0/24

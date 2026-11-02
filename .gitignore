@@ -1,0 +1,6 @@
+# The QQ package, about 179 MB. Download it with the curl command in README.md.
+QQ.deb
+
+# Machine-specific and private: a copy of your X session cookie, and the files you and QQ
+# exchange. Docker creates this directory at the first start.
+share/

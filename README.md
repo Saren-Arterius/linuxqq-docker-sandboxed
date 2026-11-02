@@ -1,0 +1,178 @@
+# QQ in a Docker container
+
+This project runs Tencent QQ Linux on a Linux host inside a Docker container with strict
+limits. Tencent QQ is closed-source software. Do not give it your user account. The
+container runs as uid 65534 (nobody), with no Linux capabilities and with a fixed network
+policy. QQ can reach the internet and your display. QQ cannot reach your files, your
+user account, the ports on this computer, or the other computers on your network.
+
+## Files
+
+| File | Purpose |
+| --- | --- |
+| `compose.yaml` | The container and the one-time setup service. All limits are in this file. |
+| `Dockerfile` | Builds the image from `ubuntu:22.04` and `QQ.deb`. |
+| `QQ.deb` | The official Tencent package. Download it yourself; see "Get a new version". |
+| `share/` | You and QQ exchange files here. It appears as `/share` inside the container. |
+| `share/.xauth` | A copy of your X session cookie. The setup service creates it. |
+
+## Requirements
+
+- Docker Engine and Docker Compose, with the daemon running as root.
+- A GNOME session on Wayland. XWayland must run (it runs by default).
+- Your user must belong to the `docker` group.
+- Do not use `sudo` for the commands in this document. The setup service gets root by
+  itself.
+
+## First use
+
+1. Download the package. Use the mirror URL; the direct Tencent URL gives an HTTP 403
+   error from most networks:
+
+   ```bash
+   curl -fL "https://dlqq.akkariin.moe/$(curl -s https://cdn-go.cn/qq-web/im.qq.com_new/latest/rainbow/linuxConfig.js | grep -oP '(?<="deb":")[^"]+' | head -1)" -o QQ.deb
+   ```
+
+2. Build and start:
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+3. A QQ window opens on your desktop. Log in there. Your login stays in a Docker volume
+   and survives a restart.
+
+## Daily use
+
+```bash
+docker compose up -d        # start
+docker compose stop qq      # stop, keep the login
+docker compose logs -f qq   # read the log
+```
+
+The container does not start when the computer starts. You start it.
+
+## How the setup service works
+
+`x-grant` runs one time before QQ starts. It runs as root and it runs only the command in
+`compose.yaml`. Tencent code does not run in this service. It does four things:
+
+1. It copies your X session cookie to `share/.xauth`, with owner root, group render, and
+   mode 640. The container reads that file because it has group 989 (render). A program
+   that runs only as uid 65534 cannot read it. This is why the service does not use
+   `xhost +si:localuser:nobody`: that command gives your desktop to every program that runs
+   as uid 65534, and `dnsmasq` runs as uid 65534 on many hosts.
+2. It adds an ACL to `/tmp/.X11-unix/X0` so uid 65534 can connect to the socket. This
+   permits a connection only. The cookie is still necessary.
+3. It gives `share/` to uid 65534 so QQ can write files there.
+4. It installs the firewall rules. See "Network policy".
+
+## Network policy
+
+The container gets its own bridge, `qq-net`, with the fixed subnet `172.26.0.0/24`. The
+subnet is part of the security: the rules select it as the source address.
+
+The setup service adds one rule to the `INPUT` chain and one rule to the `DOCKER-USER`
+chain. Both rules send the traffic to the chain `QQ_JAIL`. The service clears `QQ_JAIL`
+and builds it again at every start, so a change in `compose.yaml` takes effect on the next
+`docker compose up`.
+
+`INPUT` carries traffic to a port on this computer. `DOCKER-USER` carries traffic that
+passes through this computer to another network. A packet for a local port does not go to
+the `FORWARD` chain, so `DOCKER-USER` alone cannot see it. Both chains are necessary.
+
+`QQ_JAIL` permits one destination and blocks the rest:
+
+- Permit: udp port 53 to `127.0.0.11`. Docker answers DNS there. This rule is insurance;
+  in a normal test these chains saw no DNS packets at all.
+- Block: `224.0.0.0/4`, `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`,
+  `100.64.0.0/10`, `169.254.0.0/16`.
+- Permit everything else: the internet. QQ needs it.
+
+The rules live in memory. A restart of the computer removes them. The container also does
+not start by itself, so the container never runs without its rules: `x-grant` installs them
+first, and QQ starts only if that service exits with 0.
+
+The container has no IPv6 address. It cannot send IPv6 packets.
+
+## Limits on the container
+
+| Setting | Value | Reason |
+| --- | --- | --- |
+| `user` | `65534:65534` | Never your uid. |
+| `cap_drop` | `ALL` | No capabilities. Chrome's `chrome-sandbox` SUID file cannot work, so the entry point passes `--no-sandbox`. The container is the sandbox. |
+| `security_opt` | `no-new-privileges:true` | A program cannot gain privileges. Docker also applies its default seccomp profile. |
+| `read_only`, `tmpfs` | root read-only, `/tmp` noexec | QQ cannot change its own programs. |
+| `shm_size` | `512m` | Electron shows a blank window without enough shared memory. |
+| `pids_limit`, `mem_limit` | 512, 2 GB | QQ cannot use all of your computer. |
+| `devices`, `group_add` | `/dev/dri`, group 989 | GPU drawing. |
+| `--ozone-platform=x11` | in the entry point | QQ on GNOME does not create a Wayland window. Test the XDG protocol and you see no `xdg_toplevel` object. XWayland works. |
+| `--disable-crash-reporter` | in the entry point | Crash reports would go to Tencent with your internet traffic. |
+
+## What QQ can still do
+
+Read this part before you rely on the container.
+
+- **Your display.** QQ can read the keyboard and the mouse, read the text in other windows,
+  and read the clipboard. This is how X works. A different display server (Xpra or Xephyr)
+  is the only way to stop it.
+- **Your screen memory.** `/dev/dri/renderD128` has mode 666 on this host, and the NVIDIA
+  driver does not separate the memory of one client from another. Add `--disable-gpu` to the
+  entry point and remove `devices` and `group_add` to stop this. Test the window after the
+  change.
+- **The internet.** QQ can send any data to any internet address at any time. The rules do
+  not stop this.
+- **DNS.** Docker answers DNS for the container from your host, so the container can look up
+  any name and can send data in DNS names.
+- **Its own files.** The volume holds your QQ login token and your chat history in clear
+  text. Your disk encryption protects them, and nothing else does.
+
+## Check the container
+
+```bash
+docker compose ps
+docker compose exec qq grep -E 'CapEff|NoNewPrivs|Seccomp' /proc/1/status
+# Expect: CapEff 0000000000000000, NoNewPrivs 1, Seccomp 2
+ps -eo user,comm | grep qq                       # Expect: nobody
+xhost | grep -c 'si:'                            # Expect: 0
+sudo iptables -S QQ_JAIL                         # Expect: the rules above
+sudo iptables -S INPUT | grep -c QQ_JAIL         # Expect: 1
+```
+
+Test the network policy from inside the container:
+
+```bash
+docker compose exec qq bash -c 'for hp in 127.0.0.11:53 172.26.0.1:22 192.168.0.1:445 1.1.1.1:443; do h=${hp%:*}; p=${hp#*:}; timeout 3 bash -c "cat < /dev/null > /dev/tcp/$h/$p" 2>/dev/null && echo "OPEN $hp" || echo "blocked $hp"; done'
+# Expect: OPEN 1.1.1.1:443 (the internet) and OPEN 127.0.0.11:53 (Docker answers DNS inside
+#         its own sandbox, so those packets never reach the chains).
+# Expect: blocked 172.26.0.1:22 (this computer) and blocked 192.168.0.1:445 (the LAN).
+```
+
+## Troubleshooting
+
+| Problem | Cause and action |
+| --- | --- |
+| `no xauth cookie found` | You are not in a GNOME Wayland session, or `/run/user/1000` is different. Start the desktop session, then run `docker compose up -d --force-recreate x-grant`. |
+| No window, and the container stops | The X cookie is old. Your cookie name changes at every login. Run `docker compose up -d --force-recreate x-grant`. |
+| The window stays blank | Not enough shared memory, or the GPU. `shm_size` must stay at 512m. Then test `--disable-gpu`. |
+| `permission denied` on the X socket | The ACL is missing. Check `getfacl /tmp/.X11-unix/X0`; it must have `user:nobody:rw-`. Run the setup service again. |
+| QQ says it cannot reach the network | Check the rules: `sudo iptables -S QQ_JAIL`. A rule for `0.0.0.0/0` would block the internet; there must be no such rule. |
+| DNS fails after you change the subnet | The subnet in `compose.yaml` no longer matches the jump rule. Delete the old jump rule and run the setup service again. |
+
+## Get a new version
+
+1. Download the new package with the command in "First use".
+2. Run `docker compose up -d --build`.
+3. Your login and chat history stay in the volume.
+
+## Remove everything
+
+```bash
+docker compose down
+docker volume rm linuxqq-docker_qq-home
+sudo iptables -D INPUT -s 172.26.0.0/24 -j QQ_JAIL
+sudo iptables -D DOCKER-USER -s 172.26.0.0/24 -j QQ_JAIL
+sudo iptables -X QQ_JAIL
+```
+
+Then delete the files in this directory. `share/` may hold files that QQ received.
