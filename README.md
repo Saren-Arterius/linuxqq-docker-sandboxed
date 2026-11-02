@@ -6,6 +6,19 @@ container runs as uid 65534 (nobody), with no Linux capabilities and with a fixe
 policy. QQ can reach the internet and your display. QQ cannot reach your files, your
 user account, the ports on this computer, or the other computers on your network.
 
+## Disclaimer
+
+An AI model generated both the configuration and this document: Qwen 3.8 Flash Next,
+running locally on the author's computer. Nothing was sent to a cloud service to produce them.
+
+Each command in this document ran on one computer (CachyOS, GNOME on Wayland, an NVIDIA
+GPU, Docker with a root daemon), and the expected output comes from that run. Nothing was
+tested on a second machine. An AI adversarial review was run against this configuration and
+the problems it found are fixed; no human security audit was done.
+
+This is not a Tencent project. QQ is closed-source software from another company, and that
+company does not support this configuration. Read "What QQ can still do" before you use it.
+
 ## Files
 
 | File | Purpose |
