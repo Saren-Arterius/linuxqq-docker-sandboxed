@@ -72,9 +72,9 @@ services:
     security_opt: ["no-new-privileges:true"]   # A program cannot gain privileges. Docker also applies its default seccomp profile.
     read_only: true
     tmpfs: ["/tmp:mode=1777,size=256m"]        # /tmp is writable, and programs cannot execute files from it.
-    shm_size: 512m                             # Electron shows a blank window without enough shared memory.
+    shm_size: 2g                               # Electron shows a blank window without enough shared memory. QQ and Firefox share it.
     pids_limit: 512                            # Limit: the container can start 512 processes at most.
-    mem_limit: 2g                              # Limit: the container can use 2 GB of memory at most.
+    mem_limit: 8g                              # Limit: the container can use 8 GB of memory at most.
     group_add: ["989"]                         # The host group render. Gives access to /dev/dri and to ./share/.xauth.
     devices: ["/dev/dri"]
     environment:
@@ -85,6 +85,12 @@ services:
       - qq-home:/home/qq                       # QQ keeps its login, cache and chat history here. Docker creates the volume with the owner from the image.
       - ./share:/share                         # You and QQ exchange files here. QQ saves received files here.
       - /tmp/.X11-unix:/tmp/.X11-unix:ro       # Read-only. The X client library uses this path. The container does not write here.
+      # Clock follows the host timezone. The bind mount resolves the symlink, so the file arrives
+      # without a zone name: glibc uses it directly, ICU reports the offset (GMT+08:00) instead
+      # of a name. Hong Kong has no daylight saving, so that difference does not matter here.
+      # After "timedatectl set-timezone" on the host, restart the container: the mount points at
+      # the file that the symlink selected when the container started.
+      - /etc/localtime:/etc/localtime:ro
     restart: "no"
     networks: [qq-net]
 

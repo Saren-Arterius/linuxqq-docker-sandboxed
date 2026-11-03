@@ -1,17 +1,28 @@
 # Builds the QQ image. Start the container with compose.yaml, not with this file.
-FROM ubuntu:22.04
+FROM ubuntu:26.04
 ENV DEBIAN_FRONTEND=noninteractive
 COPY QQ.deb /tmp/QQ.deb
-# libasound2: sound output.
+# libasound2t64: sound output.
 # libgbm1: buffer allocation for GPU drawing.
 # fonts-noto-cjk: Chinese fonts. The container cannot use the fonts of the host.
 # libx11-xcb1: QQ starts as a background process with no window if this package is absent.
 # libegl1, libgl1-mesa-dri: OpenGL and the Mesa drivers.
+# firefox: a browser for the links you open in QQ. The firefox package in the Ubuntu
+# archives installs a snap, and a snap cannot run in this container. So add the Mozilla
+# repository, with a preference that selects its package instead of the snap stub. curl is
+# used once for the key and removed again in the same layer.
 RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && install -d /etc/apt/keyrings \
+ && curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o /etc/apt/keyrings/mozilla.asc \
+ && echo 'deb [signed-by=/etc/apt/keyrings/mozilla.asc] https://packages.mozilla.org/apt mozilla main' > /etc/apt/sources.list.d/mozilla.list \
+ && printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' > /etc/apt/preferences.d/mozilla \
+ && apt-get update \
  && apt-get install -y --no-install-recommends /tmp/QQ.deb \
- && apt-get install -y --no-install-recommends libasound2 libgbm1 \
+ && apt-get install -y --no-install-recommends firefox libasound2t64 libgbm1 \
       libegl1 libgl1-mesa-dri libx11-xcb1 \
       fonts-noto-cjk fontconfig ca-certificates \
+ && apt-get purge -y --auto-remove curl \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists /tmp/QQ.deb \
  && mkdir -p /home/qq \

@@ -24,7 +24,7 @@ company does not support this configuration. Read "What QQ can still do" before 
 | File | Purpose |
 | --- | --- |
 | `compose.yaml` | The container and the one-time setup service. All limits are in this file. |
-| `Dockerfile` | Builds the image from `ubuntu:22.04` and `QQ.deb`. |
+| `Dockerfile` | Builds the image from `ubuntu:26.04` and `QQ.deb`. |
 | `QQ.deb` | The official Tencent package. Download it yourself; see "Get a new version". |
 | `share/` | You and QQ exchange files here. It appears as `/share` inside the container. |
 | `share/.xauth` | A copy of your X session cookie. The setup service creates it. |
@@ -108,6 +108,31 @@ first, and QQ starts only if that service exits with 0.
 
 The container has no IPv6 address. It cannot send IPv6 packets.
 
+## Links and the browser
+
+QQ gives a link to `xdg-open`. The container has Firefox, so the page opens in a Firefox
+window on your desktop. Firefox runs inside this container, not on the host. The network
+rules and every other limit apply to Firefox in the same way they apply to QQ. Firefox
+shows the container ID in its window title, so you can tell the two apart.
+
+The firefox package in the Ubuntu archives installs a snap, and a snap cannot run in a
+container. The Dockerfile therefore adds the Mozilla APT repository, `packages.mozilla.org`,
+and a pin that selects its package. That repository is a third-party download source; it is
+the only part of the image that does not come from the Ubuntu archives.
+
+Firefox cannot build its own sandbox here. Docker's seccomp profile refuses the user
+namespace that the Firefox sandbox needs, and the container has no capabilities. This is the
+same trade as the `--no-sandbox` flag for QQ: the container is the sandbox. Firefox starts
+without a window for more than 25 seconds when it creates its profile for the first time;
+after that it starts in about 5 seconds.
+
+Firefox keeps its profile, so history, cookies and logins stay in the same volume as QQ.
+Delete the volume to remove both. QQ plus one Firefox page uses about 1 GB. The image is
+2.56 GB with Firefox in it.
+
+If a Firefox tab shows a crash page, look at the memory limit first, then at `/dev/shm`:
+QQ and Firefox share the 2 GB of shared memory that `shm_size` sets.
+
 ## Limits on the container
 
 | Setting | Value | Reason |
@@ -116,9 +141,10 @@ The container has no IPv6 address. It cannot send IPv6 packets.
 | `cap_drop` | `ALL` | No capabilities. Chrome's `chrome-sandbox` SUID file cannot work, so the entry point passes `--no-sandbox`. The container is the sandbox. |
 | `security_opt` | `no-new-privileges:true` | A program cannot gain privileges. Docker also applies its default seccomp profile. |
 | `read_only`, `tmpfs` | root read-only, `/tmp` noexec | QQ cannot change its own programs. |
-| `shm_size` | `512m` | Electron shows a blank window without enough shared memory. |
-| `pids_limit`, `mem_limit` | 512, 2 GB | QQ cannot use all of your computer. |
+| `shm_size` | `2g` | Electron shows a blank window without enough shared memory. QQ and Firefox share it. |
+| `pids_limit`, `mem_limit` | 512, 8 GB | QQ and Firefox cannot use all of your computer. The host has 91 GB, so this is a guardrail, not a limit you reach. |
 | `devices`, `group_add` | `/dev/dri`, group 989 | GPU drawing. |
+| `/etc/localtime` | mounted read-only | The clock follows the host timezone. After `timedatectl set-timezone`, restart the container: the mount points at the file the symlink selected at start. |
 | `--ozone-platform=x11` | in the entry point | QQ on GNOME does not create a Wayland window. Test the XDG protocol and you see no `xdg_toplevel` object. XWayland works. |
 | `--disable-crash-reporter` | in the entry point | Crash reports would go to Tencent with your internet traffic. |
 
@@ -135,6 +161,9 @@ Read this part before you rely on the container.
   change.
 - **The internet.** QQ can send any data to any internet address at any time. The rules do
   not stop this.
+- **This container's browser.** A link in QQ opens a page in the Firefox that runs inside
+  this container. It is not your browser: it shares nothing with your browser, and the same
+  limits apply to it.
 - **DNS.** Docker answers DNS for the container from your host, so the container can look up
   any name and can send data in DNS names.
 - **Its own files.** The volume holds your QQ login token and your chat history in clear
@@ -167,7 +196,7 @@ docker compose exec qq bash -c 'for hp in 127.0.0.11:53 172.26.0.1:22 192.168.0.
 | --- | --- |
 | `no xauth cookie found` | You are not in a GNOME Wayland session, or `/run/user/1000` is different. Start the desktop session, then run `docker compose up -d --force-recreate x-grant`. |
 | No window, and the container stops | The X cookie is old. Your cookie name changes at every login. Run `docker compose up -d --force-recreate x-grant`. |
-| The window stays blank | Not enough shared memory, or the GPU. `shm_size` must stay at 512m. Then test `--disable-gpu`. |
+| The window stays blank | Not enough shared memory, or the GPU. `shm_size` must stay at 2 GB. Then test `--disable-gpu`. |
 | `permission denied` on the X socket | The ACL is missing. Check `getfacl /tmp/.X11-unix/X0`; it must have `user:nobody:rw-`. Run the setup service again. |
 | QQ says it cannot reach the network | Check the rules: `sudo iptables -S QQ_JAIL`. A rule for `0.0.0.0/0` would block the internet; there must be no such rule. |
 | DNS fails after you change the subnet | The subnet in `compose.yaml` no longer matches the jump rule. Delete the old jump rule and run the setup service again. |
