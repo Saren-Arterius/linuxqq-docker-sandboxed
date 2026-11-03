@@ -133,6 +133,38 @@ Delete the volume to remove both. QQ plus one Firefox page uses about 1 GB. The 
 If a Firefox tab shows a crash page, look at the memory limit first, then at `/dev/shm`:
 QQ and Firefox share the 2 GB of shared memory that `shm_size` sets.
 
+### WebGL does not work
+
+A page that needs 3-D shows nothing: `canvas.getContext('webgl')` returns no context. Normal
+pages, text, images and video work, and QQ itself is not affected.
+
+Firefox runs 3-D in a separate GPU process, and that process does not start in this image. The
+process list then shows `forkserver`, `tab`, `rdd`, `socket` and `utility`, and no GPU entry.
+WebGL lives in the GPU process, so WebGL is off. Your Firefox on the host does start a GPU
+process, which is why the same page works there.
+
+The GPU process needs EGL with a direct rendering device. The image has no NVIDIA user-space
+driver, so EGL either opens a card it cannot drive, when the container has `/dev/dri`, or finds
+no device at all, when it does not. GLX is not the problem: inside the container, `glxinfo`
+reports `direct rendering: Yes` and Mesa llvmpipe with OpenGL 4.5, and Firefox names `Mesa
+llvmpipe` as its adapter.
+
+These settings were measured and changed nothing, so do not spend time on them:
+`webgl.force-enabled`, `gfx.blocklist.enabled`, `gfx.x11-egl.force-disabled`,
+`layers.acceleration.force-enabled`, `gfx.webrender.software`, `widget.dmabuf.force-disabled`,
+`gfx.canvas.accelerated`, `--no-sandbox`, `MOZ_DISABLE_GPU_SANDBOX`, and
+`LIBGL_ALWAYS_SOFTWARE`. The result was also the same with the container limits removed: with
+Docker's seccomp profile off, with all capabilities, with no process limit, and with the NVIDIA
+container runtime. The jail is not what breaks WebGL; the image has no 3-D driver that the GPU
+process can use.
+
+The fix is to give the container the same NVIDIA user-space the host uses. That puts a
+proprietary driver blob and the driver's kernel interface inside the jail, which is the opposite
+of what this repository is for, so the container has no GPU device and no NVIDIA libraries. This
+is also why `compose.yaml` no longer passes `/dev/dri`: with the device and without it, `glxinfo`
+gives the same llvmpipe result, and with it the GPU process fails harder. If you want WebGL in
+the jail, mount the host driver libraries and `/dev/dri`, and accept the larger attack surface.
+
 ## Limits on the container
 
 | Setting | Value | Reason |
@@ -142,8 +174,8 @@ QQ and Firefox share the 2 GB of shared memory that `shm_size` sets.
 | `security_opt` | `no-new-privileges:true` | A program cannot gain privileges. Docker also applies its default seccomp profile. |
 | `read_only`, `tmpfs` | root read-only, `/tmp` noexec | QQ cannot change its own programs. |
 | `shm_size` | `2g` | Electron shows a blank window without enough shared memory. QQ and Firefox share it. |
-| `pids_limit`, `mem_limit` | 512, 8 GB | QQ and Firefox cannot use all of your computer. The host has 91 GB, so this is a guardrail, not a limit you reach. |
-| `devices`, `group_add` | `/dev/dri`, group 989 | GPU drawing. |
+| `pids_limit`, `mem_limit` | 4096, 8 GB | QQ and Firefox cannot use all of your computer. The limit counts threads, and QQ uses about 100 on its own. The host has 91 GB, so the memory limit is a guardrail, not a limit you reach. |
+| `group_add` | group 989 | The host group `render`. Gives read access to `share/.xauth`. The container has no GPU device: see "WebGL" below. |
 | `/etc/localtime` | mounted read-only | The clock follows the host timezone. After `timedatectl set-timezone`, restart the container: the mount points at the file the symlink selected at start. |
 | `--ozone-platform=x11` | in the entry point | QQ on GNOME does not create a Wayland window. Test the XDG protocol and you see no `xdg_toplevel` object. XWayland works. |
 | `--disable-crash-reporter` | in the entry point | Crash reports would go to Tencent with your internet traffic. |

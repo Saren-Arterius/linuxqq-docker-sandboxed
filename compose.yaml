@@ -73,10 +73,12 @@ services:
     read_only: true
     tmpfs: ["/tmp:mode=1777,size=256m"]        # /tmp is writable, and programs cannot execute files from it.
     shm_size: 2g                               # Electron shows a blank window without enough shared memory. QQ and Firefox share it.
-    pids_limit: 512                            # Limit: the container can start 512 processes at most.
+    pids_limit: 4096                           # The limit counts threads, not only processes. QQ uses about 100 threads on its own, Firefox several hundred.
     mem_limit: 8g                              # Limit: the container can use 8 GB of memory at most.
     group_add: ["989"]                         # The host group render. Gives access to /dev/dri and to ./share/.xauth.
-    devices: ["/dev/dri"]
+    # No GPU device. The image has no NVIDIA user-space driver, so a program that opens
+    # /dev/dri finds a card it cannot drive and fails instead of falling back. Drawing goes
+    # through the X server instead, which renders on the host.
     environment:
       DISPLAY: ":0"
       XDG_RUNTIME_DIR: /tmp
