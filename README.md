@@ -184,13 +184,18 @@ the jail, mount the host driver libraries and `/dev/dri`, and accept the larger 
 
 Read this part before you rely on the container.
 
-- **Your display.** QQ can read the keyboard and the mouse, read the text in other windows,
-  and read the clipboard. This is how X works. A different display server (Xpra or Xephyr)
-  is the only way to stop it.
-- **Your screen memory.** `/dev/dri/renderD128` has mode 666 on this host, and the NVIDIA
-  driver does not separate the memory of one client from another. Add `--disable-gpu` to the
-  entry point and remove `devices` and `group_add` to stop this. Test the window after the
-  change.
+- **Your display, and what is on it.** QQ can read the keyboard and the mouse, list every
+  window on your desktop with its title, and read the clipboard. Measured inside the container:
+  `xclip -o` returns the clipboard, and `_NET_CLIENT_LIST` lists the other applications with
+  their titles. Window titles show file names, page titles and chat partner names. This is how X
+  works: the cookie controls who may connect, not what a client may do after it connects. Closing
+  QQ removes both channels. A virtual machine is the proportionate next step, because it also
+  removes the display; a nested display server (Xpra or Xephyr) works too and costs more setup
+  than it saves here.
+- **Screen pixels: not readable in this setup.** `GetImage` on a window that QQ does not own
+  returns `BadMatch`, and `xwd -root` returns nothing, because your compositor redirects windows.
+  The XComposite pixmap path was not tested, so treat this as "did not work", not "cannot work".
+  The container has no GPU device, so the driver cannot be used to read another client's memory.
 - **The internet.** QQ can send any data to any internet address at any time. The rules do
   not stop this.
 - **This container's browser.** A link in QQ opens a page in the Firefox that runs inside
